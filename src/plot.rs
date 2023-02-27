@@ -77,8 +77,8 @@ impl WaterfallPlot {
         ];
 
         let level = 0;
-        let internal_format: i32 = glow::LUMINANCE as i32;
-        let format: u32 = glow::LUMINANCE;
+        let internal_format: i32 = glow::RGBA as i32;
+        let format: u32 = glow::RGBA;
         let texture_width = 2048;
         let texture_height = 768;
         let border = 0;
@@ -117,9 +117,9 @@ impl WaterfallPlot {
         //
         let window_width: i32 = 1024;
         let window_height: i32 = 768;
-        let power_offset: f32 = 50.0;
+        let power_offset: f32 = 30.0;
         let power_min: f32 = 0.0;
-        let power_max: f32 = 180.0;
+        let power_max: f32 = 100.0;
         let pingpong: usize = 0;
 
         // Create GPU pipelines for:
@@ -213,7 +213,6 @@ impl WaterfallPlot {
         gl.uniform_1_f32_slice(self.u_samples.as_ref(), samples_block);
 
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.waterfall_fb));
-        //gl.active_texture(glow::TEXTURE0);
         gl.bind_texture(glow::TEXTURE_2D, back_texture);
         gl.framebuffer_texture_2d(
             glow::FRAMEBUFFER,
@@ -229,7 +228,6 @@ impl WaterfallPlot {
         // Draw final scene (only colormap atm)
         gl.use_program(self.colormap_program);
         gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-        //gl.active_texture(glow::TEXTURE0);
         gl.bind_texture(glow::TEXTURE_2D, front_texture);
         gl.viewport(0, 0, self.window_width, self.window_height);
         gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);

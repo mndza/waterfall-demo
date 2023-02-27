@@ -16,7 +16,7 @@ void main() {
         int freq_bin = int( gl_FragCoord.x + 1024 ) % 2048;
         float bin_power = scale * log(samples[freq_bin]);
         float val = (bin_power + waterfallScaleAdd) * waterfallScaleMult;
-        color = vec4(val, 0.0, 0.0, 1.0); // only the first component is actually stored
+        color = vec4(val, val, val, 1.0); // only the first component is actually stored
     } else {
         // Copy last texture but moving it 1px down
         vec2 pos_offset = (gl_FragCoord.xy + vec2(0,1)) / resolution.xy;
