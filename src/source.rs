@@ -9,14 +9,16 @@ const NUM_SAMPLES: usize = 2048;
 pub struct DataSupplier {
     // Number of segments that are averaged
     averaging: u32,
+    // Precomputed scale factor for mean calculation
+    averaging_inv: f32,
     // FFT instance optimized for our desired size
     fft: Arc<dyn Fft<f32>>,
     // Source of input samples
     reader: BufReader<io::Stdin>,
     // Buffer to read raw samples from HackRF
     buffer: [u8; 2 * NUM_SAMPLES],
-    // Buffer for conversion from i8 to Complex32
-    buffer_c32: [Complex32; NUM_SAMPLES],
+    // Buffer for conversion from i8 to f32
+    buffer_f32: [f32; 2 * NUM_SAMPLES],
     // Scratch memory for FFT, avoids per-loop allocation
     scratch: [Complex32; NUM_SAMPLES],
     // Buffer for computing squared magnitude of FFT output
@@ -25,18 +27,20 @@ pub struct DataSupplier {
 
 impl DataSupplier {
     pub fn new(averaging: u32) -> Self {
+        let averaging_inv = 1.0 / averaging as f32;
         let fft = FftPlanner::new().plan_fft_forward(NUM_SAMPLES);
         let reader = BufReader::new(io::stdin());
         let buffer = [0; 2 * NUM_SAMPLES];
-        let buffer_c32 = [Complex32::zero(); NUM_SAMPLES];
+        let buffer_f32 = [0.0; 2 * NUM_SAMPLES];
         let scratch = [Complex32::zero(); NUM_SAMPLES];
         let buffer_magsq = [f32::zero(); NUM_SAMPLES];
         Self {
             averaging,
+            averaging_inv,
             fft,
             reader,
             buffer,
-            buffer_c32,
+            buffer_f32,
             scratch,
             buffer_magsq,
         }
@@ -52,30 +56,29 @@ impl DataSupplier {
                 .read_exact(&mut self.buffer)
                 .expect("error reading samples");
 
-            // Convert samples to complex floats
-            for i in 0..NUM_SAMPLES {
-                self.buffer_c32[i] = Complex32 {
-                    re: (self.buffer[2 * i] as i8) as f32,
-                    im: (self.buffer[2 * i + 1] as i8) as f32,
-                } / 128.0;
+            // Convert to f32
+            let mut buffer = self.buffer_f32;
+            for i in 0..2 * NUM_SAMPLES {
+                buffer[i] = (self.buffer[i] as i8) as f32 / 128.0;
             }
+
+            // Cast as Complex32 (memory layout compatible)
+            let mut buffer: [Complex32; NUM_SAMPLES] = unsafe { std::mem::transmute(buffer) };
 
             // Compute in-place FFT with scratch memory to avoid allocations
             self.fft
-                .process_with_scratch(&mut self.buffer_c32, &mut self.scratch);
+                .process_with_scratch(&mut buffer, &mut self.scratch);
 
             // Convert FFT output to squared magnitude and add to averaging buffer
             for i in 0..NUM_SAMPLES {
-                self.buffer_magsq[i] += self.buffer_c32[i].re * self.buffer_c32[i].re
-                    + self.buffer_c32[i].im * self.buffer_c32[i].im;
+                self.buffer_magsq[i] += buffer[i].norm_sqr();
             }
         }
 
         // Scale due to averaging
-        let averaging_inv = 1.0 / self.averaging as f32;
         self.buffer_magsq
             .iter_mut()
-            .for_each(|x| *x *= averaging_inv as f32);
+            .for_each(|x| *x *= self.averaging_inv as f32);
 
         &self.buffer_magsq
     }
