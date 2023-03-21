@@ -1,13 +1,17 @@
 use glow::*;
 use glow::{Context, HasContext, Texture};
 
+const SHADER_VERSION: &str = "#version 140";
+const TEXTURE_WIDTH: u32 = 2048;
+const TEXTURE_HEIGHT: u32 = 1024;
+const NUM_TILES: u32 = 8;
+const MAX_HEIGHT: u32 = NUM_TILES * TEXTURE_HEIGHT;
+
 pub struct WaterfallPlot {
     gl: Context,
     pingpong: usize,
     waterfall_fb: Framebuffer,
-    waterfall_textures: [Texture; 2],
-    texture_width: i32,
-    texture_height: i32,
+    waterfall_textures: [Texture; NUM_TILES as usize + 1],
     window_width: i32,
     window_height: i32,
     power_offset: f32,
@@ -18,12 +22,16 @@ pub struct WaterfallPlot {
     colormap_program: Option<NativeProgram>,
     // Uniforms
     u_samples: Option<UniformLocation>,
+    u_y_offset: Option<UniformLocation>,
+    y_offset: u32,
     u_resolution: Option<UniformLocation>,
     u_power_offset: Option<UniformLocation>,
     u_power_scale: Option<UniformLocation>,
+    // Control variables
+    u_cm_offset: Option<UniformLocation>,
+    time_position: usize,
+    scroll_advance: bool,
 }
-
-const SHADER_VERSION: &str = "#version 140";
 
 impl WaterfallPlot {
     unsafe fn create_program(
@@ -71,16 +79,12 @@ impl WaterfallPlot {
         // - One serves as destination for the framebuffer render
         // - The other is the last rendered texture, that we use to copy from
         // We will switch roles between them every new frame
-        let waterfall_textures: [Texture; 2] = [
-            gl.create_texture().expect("Cannot create texture"),
-            gl.create_texture().expect("Cannot create texture"),
-        ];
+        let waterfall_textures: [Texture; NUM_TILES as usize + 1] = [(); NUM_TILES as usize + 1]
+            .map(|_| gl.create_texture().expect("Cannot create texture"));
 
         let level = 0;
         let internal_format: i32 = glow::RGBA as i32;
         let format: u32 = glow::RGBA;
-        let texture_width = 2048;
-        let texture_height = 768;
         let border = 0;
         let ty = glow::UNSIGNED_BYTE;
 
@@ -90,8 +94,8 @@ impl WaterfallPlot {
                 glow::TEXTURE_2D,
                 level,
                 internal_format,
-                texture_width,
-                texture_height,
+                TEXTURE_WIDTH as i32,
+                TEXTURE_HEIGHT as i32,
                 border,
                 format,
                 ty,
@@ -100,12 +104,12 @@ impl WaterfallPlot {
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_MAG_FILTER,
-                glow::LINEAR as i32,
+                glow::NEAREST as i32,
             );
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_MIN_FILTER,
-                glow::LINEAR as i32,
+                glow::NEAREST as i32,
             );
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::REPEAT as i32);
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::REPEAT as i32);
@@ -116,11 +120,12 @@ impl WaterfallPlot {
 
         //
         let window_width: i32 = 1024;
-        let window_height: i32 = 768;
+        let window_height: i32 = 1024;
         let power_offset: f32 = 30.0;
         let power_min: f32 = 0.0;
         let power_max: f32 = 100.0;
         let pingpong: usize = 0;
+        let time_position: usize = 0;
 
         // Create GPU pipelines for:
         // 1. Creation of the waterfall texture
@@ -146,8 +151,8 @@ impl WaterfallPlot {
         let u_resolution = gl.get_uniform_location(waterfall_program.unwrap(), "resolution");
         gl.uniform_2_f32(
             u_resolution.as_ref(),
-            texture_width as f32,
-            texture_height as f32,
+            TEXTURE_WIDTH as f32,
+            TEXTURE_HEIGHT as f32,
         );
 
         let u_waterfall_texture =
@@ -155,6 +160,8 @@ impl WaterfallPlot {
         gl.uniform_1_i32(u_waterfall_texture.as_ref(), 0);
 
         let u_samples = gl.get_uniform_location(waterfall_program.unwrap(), "samples");
+
+        let u_y_offset = gl.get_uniform_location(waterfall_program.unwrap(), "yOffset");
 
         gl.bind_framebuffer(glow::FRAMEBUFFER, None);
 
@@ -169,19 +176,24 @@ impl WaterfallPlot {
             window_height as f32,
         );
 
-        let u_waterfall_texture =
-            gl.get_uniform_location(colormap_program.unwrap(), "waterfallTexture");
-        gl.uniform_1_i32(u_waterfall_texture.as_ref(), 0);
+        let u_cm_offset = gl.get_uniform_location(colormap_program.unwrap(), "offset");
+        let u_waterfall_texture_0 =
+            gl.get_uniform_location(colormap_program.unwrap(), "waterfallTexture0");
+        gl.uniform_1_i32(u_waterfall_texture_0.as_ref(), 0);
+        let u_waterfall_texture_1 =
+            gl.get_uniform_location(colormap_program.unwrap(), "waterfallTexture1");
+        gl.uniform_1_i32(u_waterfall_texture_1.as_ref(), 1);
 
         gl.clear_color(0.0, 0.0, 0.0, 1.0);
+
+        let y_offset = 0;
+        let scroll_advance = true;
 
         Self {
             gl,
             pingpong,
             waterfall_fb,
             waterfall_textures,
-            texture_width,
-            texture_height,
             window_width,
             window_height,
             power_offset,
@@ -190,9 +202,14 @@ impl WaterfallPlot {
             waterfall_program,
             colormap_program,
             u_samples,
+            u_y_offset,
+            y_offset,
             u_resolution,
             u_power_offset,
             u_power_scale,
+            u_cm_offset,
+            time_position,
+            scroll_advance,
         }
     }
 
@@ -202,33 +219,83 @@ impl WaterfallPlot {
     }
 
     pub unsafe fn update_plot(&mut self, samples_block: &[f32]) {
-        let front_texture = Some(self.waterfall_textures[self.pingpong]);
-        let back_texture = Some(self.waterfall_textures[self.pingpong ^ 1]);
+        // Update waterfall program logic
+        // We want to update (back_texture) with the new FFT data, but we cannot
+        // write directly to it. Instead, we use a secondary texture (front_texture)
+        // as a target and swap them every frame.
+        self.y_offset = (self.y_offset + 1).rem_euclid(MAX_HEIGHT);
+        let target_texture = (self.y_offset / TEXTURE_HEIGHT) as usize;
+        let ztexture = NUM_TILES as usize;
+        let (front_texture, back_texture) = if self.pingpong == 0 {
+            (target_texture, ztexture)
+        } else {
+            (ztexture, target_texture)
+        };
 
+        // Update colormap program logic
+        // Because we want to support scrolling, we select here the 2 textures that
+        // are going to get drawn to the screen: top (cm_tex0) and bottom (cm_tex1).
+        // cm_offset controls how much is drawn of each one.
+        if self.scroll_advance == false
+            && self.time_position < ((NUM_TILES - 1) * TEXTURE_HEIGHT - 1) as usize
+        {
+            self.time_position = self.time_position + 1;
+        }
+        let scroll_offset = (self.y_offset as i32 - self.time_position as i32)
+            .rem_euclid(MAX_HEIGHT as i32) as usize;
+        let cm_offset = scroll_offset.rem_euclid(TEXTURE_HEIGHT as usize);
+
+        let tex_idx0 = (scroll_offset / TEXTURE_HEIGHT as usize) as usize;
+        let tex_idx1 = (tex_idx0 as i32 - 1).rem_euclid(NUM_TILES as i32) as usize;
+        let cm_tex0 = if tex_idx0 == target_texture {
+            front_texture
+        } else {
+            tex_idx0
+        };
+        let cm_tex1 = if tex_idx1 == target_texture {
+            front_texture
+        } else {
+            tex_idx1
+        };
+
+        // Actual OpenGL calls start here
         let gl = &self.gl;
 
         // Update waterfall texture first
         gl.use_program(self.waterfall_program);
 
+        // Update samples uniform with current FFT window and time position to update
         gl.uniform_1_f32_slice(self.u_samples.as_ref(), samples_block);
-
+        gl.uniform_1_u32(
+            self.u_y_offset.as_ref(),
+            self.y_offset.rem_euclid(TEXTURE_HEIGHT),
+        );
+        // Use the framebuffer to render the updated waterfall to another texture
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.waterfall_fb));
-        gl.bind_texture(glow::TEXTURE_2D, back_texture);
+        gl.active_texture(glow::TEXTURE0);
+        gl.bind_texture(
+            glow::TEXTURE_2D,
+            Some(self.waterfall_textures[back_texture]),
+        );
         gl.framebuffer_texture_2d(
             glow::FRAMEBUFFER,
             glow::COLOR_ATTACHMENT0,
             glow::TEXTURE_2D,
-            front_texture,
+            Some(self.waterfall_textures[front_texture]),
             0,
         );
-        gl.viewport(0, 0, self.texture_width, self.texture_height);
+        gl.viewport(0, 0, TEXTURE_WIDTH as i32, TEXTURE_HEIGHT as i32);
         gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
         gl.draw_buffer(glow::COLOR_ATTACHMENT0);
 
         // Draw final scene (only colormap atm)
         gl.use_program(self.colormap_program);
         gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-        gl.bind_texture(glow::TEXTURE_2D, front_texture);
+        gl.active_texture(glow::TEXTURE0);
+        gl.bind_texture(glow::TEXTURE_2D, Some(self.waterfall_textures[cm_tex0]));
+        gl.active_texture(glow::TEXTURE1);
+        gl.bind_texture(glow::TEXTURE_2D, Some(self.waterfall_textures[cm_tex1]));
+        gl.uniform_1_u32(self.u_cm_offset.as_ref(), cm_offset as u32);
         gl.viewport(0, 0, self.window_width, self.window_height);
         gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
 
@@ -268,5 +335,13 @@ impl WaterfallPlot {
             self.u_power_scale.as_ref(),
             1.0 / (self.power_max - self.power_min).abs(),
         );
+    }
+
+    pub unsafe fn scroll(&mut self, val: i32) {
+        self.time_position = (self.time_position as i32 + val)
+            .max(0)
+            .min((NUM_TILES as i32 - 1) * TEXTURE_HEIGHT as i32 - 1)
+            as usize;
+        self.scroll_advance = self.time_position == 0;
     }
 }

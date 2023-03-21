@@ -26,7 +26,7 @@ fn main() {
     let event_loop = glutin::event_loop::EventLoop::new();
     let wb = glutin::window::WindowBuilder::new()
         .with_title("Waterfall")
-        .with_inner_size(glutin::dpi::LogicalSize::new(1024.0, 768.0));
+        .with_inner_size(glutin::dpi::LogicalSize::new(1024.0, 1024.0));
     let windowed_context = glutin::ContextBuilder::new()
         .with_gl(glutin::GlRequest::GlThenGles {
             opengl_version: (3, 0),
@@ -43,10 +43,11 @@ fn main() {
     let mut frequency: u32 = 100e6 as u32;
     let mut waterfallplot = unsafe { WaterfallPlot::new(gl) };
     let mut samples_supplier = DataSupplier::new(frequency, args.averaging);
+    let mut last_touch: f64 = 0.0;
 
     unsafe {
         {
-            use glutin::event::{Event, WindowEvent};
+            use glutin::event::{Event, TouchPhase, WindowEvent};
             use glutin::event_loop::ControlFlow;
 
             event_loop.run(move |event, _, control_flow| {
@@ -72,6 +73,16 @@ fn main() {
                             waterfallplot.drop();
                             *control_flow = ControlFlow::Exit
                         }
+                        WindowEvent::Touch(touch) => match touch.phase {
+                            TouchPhase::Started => {
+                                last_touch = touch.location.y;
+                            }
+                            TouchPhase::Moved | TouchPhase::Ended => {
+                                waterfallplot.scroll((last_touch - touch.location.y) as i32);
+                                last_touch = touch.location.y;
+                            }
+                            _ => (),
+                        },
                         WindowEvent::KeyboardInput {
                             input:
                                 glutin::event::KeyboardInput {
@@ -106,6 +117,12 @@ fn main() {
                             glutin::event::VirtualKeyCode::Left => {
                                 frequency -= 10e6 as u32;
                                 samples_supplier.set_frequency(frequency);
+                            }
+                            glutin::event::VirtualKeyCode::Up => {
+                                waterfallplot.scroll(-100);
+                            }
+                            glutin::event::VirtualKeyCode::Down => {
+                                waterfallplot.scroll(100);
                             }
                             _ => (),
                         },
