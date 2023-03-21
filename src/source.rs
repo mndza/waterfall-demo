@@ -1,7 +1,6 @@
 use num::complex::Complex32;
 use num::Zero;
 use rustfft::{Fft, FftPlanner};
-use std::io::{self, BufReader, Read};
 use std::sync::Arc;
 
 const NUM_SAMPLES: usize = 2048;
@@ -11,14 +10,16 @@ pub struct DataSupplier {
     averaging: u32,
     // Precomputed scale factor for mean calculation
     averaging_inv: f32,
+    // SoapySDR device
+    device: soapysdr::Device,
+    // Tuning frequency
+    frequency: f64,
     // FFT instance optimized for our desired size
     fft: Arc<dyn Fft<f32>>,
     // Source of input samples
-    reader: BufReader<io::Stdin>,
-    // Buffer to read raw samples from HackRF
-    buffer: [u8; 2 * NUM_SAMPLES],
-    // Buffer for conversion from i8 to f32
-    buffer_f32: [f32; 2 * NUM_SAMPLES],
+    rx_stream: soapysdr::RxStream<Complex32>,
+    // Buffer for receiving samples
+    buffer_c32: [Complex32; NUM_SAMPLES],
     // Scratch memory for FFT, avoids per-loop allocation
     scratch: [Complex32; NUM_SAMPLES],
     // Buffer for computing squared magnitude of FFT output
@@ -26,24 +27,57 @@ pub struct DataSupplier {
 }
 
 impl DataSupplier {
-    pub fn new(averaging: u32) -> Self {
+    pub fn new(frequency: u32, averaging: u32) -> Self {
         let averaging_inv = 1.0 / averaging as f32;
         let fft = FftPlanner::new().plan_fft_forward(NUM_SAMPLES);
-        let reader = BufReader::new(io::stdin());
-        let buffer = [0; 2 * NUM_SAMPLES];
-        let buffer_f32 = [0.0; 2 * NUM_SAMPLES];
+
+        let buffer_c32 = [Complex32::zero(); NUM_SAMPLES];
         let scratch = [Complex32::zero(); NUM_SAMPLES];
         let buffer_magsq = [f32::zero(); NUM_SAMPLES];
+
+        let args: soapysdr::Args = "driver=hackrf".into();
+        let device = soapysdr::Device::new(args).expect("No SoapySDR device found");
+
+        let frequency = frequency as f64;
+        let tuning_args: soapysdr::Args = "OFFSET=50e3".into();
+        device
+            .set_frequency(soapysdr::Direction::Rx, 0, frequency, tuning_args)
+            .expect("Cannot set frequency");
+
+        device
+            .set_sample_rate(soapysdr::Direction::Rx, 0, 2.0e6)
+            .expect("Cannot set sample rate");
+
+        device
+            .set_gain(soapysdr::Direction::Rx, 0, 30.0)
+            .expect("Cannot set gain");
+
+        let mut rx_stream: soapysdr::RxStream<Complex32> = device.rx_stream(&[0]).unwrap();
+
+        rx_stream
+            .activate(None)
+            .expect("Cannot activate reception stream");
+
         Self {
             averaging,
             averaging_inv,
+            device,
+            frequency,
             fft,
-            reader,
-            buffer,
-            buffer_f32,
+            rx_stream,
+            buffer_c32,
             scratch,
             buffer_magsq,
         }
+    }
+
+    pub fn set_frequency(&mut self, freq: u32) {
+        self.frequency = freq as f64;
+        let tuning_args: soapysdr::Args = "OFFSET=50e3".into();
+        self.device
+            .set_frequency(soapysdr::Direction::Rx, 0, self.frequency, tuning_args)
+            .expect("Cannot set frequency");
+        println!("Frequency set to {}", self.frequency);
     }
 
     pub fn get_block(&mut self) -> &[f32] {
@@ -51,27 +85,19 @@ impl DataSupplier {
         self.buffer_magsq.iter_mut().for_each(|x| *x = 0.0);
 
         for _ in 0..self.averaging {
-            // Read new of data
-            self.reader
-                .read_exact(&mut self.buffer)
-                .expect("error reading samples");
-
-            // Convert to f32
-            let mut buffer = self.buffer_f32;
-            for i in 0..2 * NUM_SAMPLES {
-                buffer[i] = (self.buffer[i] as i8) as f32 / 128.0;
-            }
-
-            // Cast as Complex32 (memory layout compatible)
-            let mut buffer: [Complex32; NUM_SAMPLES] = unsafe { std::mem::transmute(buffer) };
+            // Read new chunk of data
+            let _num_samps = self
+                .rx_stream
+                .read(&[&mut self.buffer_c32], 5000000)
+                .expect("unable to read stream");
 
             // Compute in-place FFT with scratch memory to avoid allocations
             self.fft
-                .process_with_scratch(&mut buffer, &mut self.scratch);
+                .process_with_scratch(&mut self.buffer_c32, &mut self.scratch);
 
-            // Convert FFT output to squared magnitude and add to averaging buffer
+            // Convert FFT bins to squared magnitude and add to averaging buffer
             for i in 0..NUM_SAMPLES {
-                self.buffer_magsq[i] += buffer[i].norm_sqr();
+                self.buffer_magsq[i] += self.buffer_c32[i].norm_sqr();
             }
         }
 

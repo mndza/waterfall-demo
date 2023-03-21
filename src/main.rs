@@ -40,8 +40,9 @@ fn main() {
         unsafe { glow::Context::from_loader_function(|s| window.get_proc_address(s) as *const _) };
 
     //
+    let mut frequency: u32 = 100e6 as u32;
     let mut waterfallplot = unsafe { WaterfallPlot::new(gl) };
-    let mut samples_supplier = DataSupplier::new(args.averaging);
+    let mut samples_supplier = DataSupplier::new(frequency, args.averaging);
 
     unsafe {
         {
@@ -97,6 +98,14 @@ fn main() {
                             }
                             glutin::event::VirtualKeyCode::C => {
                                 waterfallplot.incr_min(-10.0);
+                            }
+                            glutin::event::VirtualKeyCode::Right => {
+                                frequency += 10e6 as u32;
+                                samples_supplier.set_frequency(frequency);
+                            }
+                            glutin::event::VirtualKeyCode::Left => {
+                                frequency -= 10e6 as u32;
+                                samples_supplier.set_frequency(frequency);
                             }
                             _ => (),
                         },
