@@ -4,14 +4,17 @@ use glow::{Context, HasContext, Texture};
 const SHADER_VERSION: &str = "#version 140";
 const TEXTURE_WIDTH: u32 = 2048;
 const TEXTURE_HEIGHT: u32 = 1024;
-const NUM_TILES: u32 = 8;
-const MAX_HEIGHT: u32 = NUM_TILES * TEXTURE_HEIGHT;
+const NUM_TILES: usize = 8;
+const ZTEXTURE: usize = NUM_TILES;
+const MAX_HEIGHT: usize = NUM_TILES * TEXTURE_HEIGHT as usize;
 
 pub struct WaterfallPlot {
     gl: Context,
-    pingpong: usize,
     waterfall_fb: Framebuffer,
     waterfall_textures: [Texture; NUM_TILES as usize + 1],
+    source_texture: usize,
+    target_texture: usize,
+    render_texture: usize,
     window_width: i32,
     window_height: i32,
     power_offset: f32,
@@ -23,7 +26,7 @@ pub struct WaterfallPlot {
     // Uniforms
     u_samples: Option<UniformLocation>,
     u_y_offset: Option<UniformLocation>,
-    y_offset: u32,
+    y_offset: usize,
     u_resolution: Option<UniformLocation>,
     u_power_offset: Option<UniformLocation>,
     u_power_scale: Option<UniformLocation>,
@@ -104,12 +107,12 @@ impl WaterfallPlot {
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_MAG_FILTER,
-                glow::NEAREST as i32,
+                glow::LINEAR as i32,
             );
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_MIN_FILTER,
-                glow::NEAREST as i32,
+                glow::LINEAR as i32,
             );
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::REPEAT as i32);
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::REPEAT as i32);
@@ -124,7 +127,6 @@ impl WaterfallPlot {
         let power_offset: f32 = 30.0;
         let power_min: f32 = 0.0;
         let power_max: f32 = 100.0;
-        let pingpong: usize = 0;
         let time_position: usize = 0;
 
         // Create GPU pipelines for:
@@ -189,11 +191,17 @@ impl WaterfallPlot {
         let y_offset = 0;
         let scroll_advance = true;
 
+        let source_texture = 0;
+        let target_texture = 0;
+        let render_texture = ZTEXTURE;
+
         Self {
             gl,
-            pingpong,
             waterfall_fb,
             waterfall_textures,
+            source_texture,
+            target_texture,
+            render_texture,
             window_width,
             window_height,
             power_offset,
@@ -219,44 +227,22 @@ impl WaterfallPlot {
     }
 
     pub unsafe fn update_plot(&mut self, samples_block: &[f32]) {
-        // Update waterfall program logic
-        // We want to update (back_texture) with the new FFT data, but we cannot
-        // write directly to it. Instead, we use a secondary texture (front_texture)
-        // as a target and swap them every frame.
-        self.y_offset = (self.y_offset + 1).rem_euclid(MAX_HEIGHT);
-        let target_texture = (self.y_offset / TEXTURE_HEIGHT) as usize;
-        let ztexture = NUM_TILES as usize;
-        let (front_texture, back_texture) = if self.pingpong == 0 {
-            (target_texture, ztexture)
-        } else {
-            (ztexture, target_texture)
-        };
-
         // Update colormap program logic
         // Because we want to support scrolling, we select here the 2 textures that
         // are going to get drawn to the screen: top (cm_tex0) and bottom (cm_tex1).
         // cm_offset controls how much is drawn of each one.
-        if self.scroll_advance == false
-            && self.time_position < ((NUM_TILES - 1) * TEXTURE_HEIGHT - 1) as usize
-        {
-            self.time_position = self.time_position + 1;
-        }
-        let scroll_offset = (self.y_offset as i32 - self.time_position as i32)
+        let scroll_offset = (self.y_offset as i32 - self.time_position as i32 + 1)
             .rem_euclid(MAX_HEIGHT as i32) as usize;
         let cm_offset = scroll_offset.rem_euclid(TEXTURE_HEIGHT as usize);
 
         let tex_idx0 = (scroll_offset / TEXTURE_HEIGHT as usize) as usize;
         let tex_idx1 = (tex_idx0 as i32 - 1).rem_euclid(NUM_TILES as i32) as usize;
-        let cm_tex0 = if tex_idx0 == target_texture {
-            front_texture
+        let cm_tex0 = if tex_idx0 == self.target_texture {
+            self.render_texture
         } else {
             tex_idx0
         };
-        let cm_tex1 = if tex_idx1 == target_texture {
-            front_texture
-        } else {
-            tex_idx1
-        };
+        let cm_tex1 = tex_idx1;
 
         // Actual OpenGL calls start here
         let gl = &self.gl;
@@ -268,20 +254,20 @@ impl WaterfallPlot {
         gl.uniform_1_f32_slice(self.u_samples.as_ref(), samples_block);
         gl.uniform_1_u32(
             self.u_y_offset.as_ref(),
-            self.y_offset.rem_euclid(TEXTURE_HEIGHT),
+            self.y_offset.rem_euclid(TEXTURE_HEIGHT as usize) as u32,
         );
         // Use the framebuffer to render the updated waterfall to another texture
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.waterfall_fb));
         gl.active_texture(glow::TEXTURE0);
         gl.bind_texture(
             glow::TEXTURE_2D,
-            Some(self.waterfall_textures[back_texture]),
+            Some(self.waterfall_textures[self.source_texture]),
         );
         gl.framebuffer_texture_2d(
             glow::FRAMEBUFFER,
             glow::COLOR_ATTACHMENT0,
             glow::TEXTURE_2D,
-            Some(self.waterfall_textures[front_texture]),
+            Some(self.waterfall_textures[self.render_texture]),
             0,
         );
         gl.viewport(0, 0, TEXTURE_WIDTH as i32, TEXTURE_HEIGHT as i32);
@@ -299,7 +285,25 @@ impl WaterfallPlot {
         gl.viewport(0, 0, self.window_width, self.window_height);
         gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
 
-        self.pingpong ^= 1;
+        // Update waterfall logic 
+        self.y_offset = (self.y_offset + 1) % MAX_HEIGHT;  // absolute position of line to paint
+        if self.y_offset % (TEXTURE_HEIGHT as usize) == 0 {
+            // Change target to the next texture
+            self.target_texture = (self.target_texture + 1) % NUM_TILES as usize;
+            (self.render_texture, self.source_texture) = (ZTEXTURE, self.target_texture);
+        } else {
+            // Source texture and render texture are mutually exclusive, thus we need
+            // to use at least 2 textures. We swap between them every frame.
+            (self.render_texture, self.source_texture) = (self.source_texture, self.render_texture);
+        }
+
+        // If scroll is locked, time position needs to be updated
+        if self.scroll_advance == false
+        && self.time_position < ((NUM_TILES - 1) * (TEXTURE_HEIGHT as usize) - 1) as usize
+        {
+            self.time_position = self.time_position + 1;
+        }
+
     }
 
     pub unsafe fn set_window_size(&mut self, width: u32, height: u32) {
