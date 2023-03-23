@@ -9,6 +9,15 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
+    #[arg(short, long)]
+    frequency: u32,
+
+    #[arg(short, long)]
+    samplerate: u32,
+
+    #[arg(short, long)]
+    bandwidth: u32,
+
     /// Enable vertical synchronization (avoids tearing)
     #[arg(short, long)]
     vsync: bool,
@@ -40,10 +49,15 @@ fn main() {
         unsafe { glow::Context::from_loader_function(|s| window.get_proc_address(s) as *const _) };
 
     //
-    let mut frequency: u32 = 100e6 as u32;
     let mut waterfallplot = unsafe { WaterfallPlot::new(gl) };
-    let mut samples_supplier = DataSupplier::new(frequency, args.averaging);
+    let mut samples_supplier = DataSupplier::new(args.averaging);
     let mut last_touch: f64 = 0.0;
+    let mut frequency = args.frequency;
+
+    samples_supplier.set_frequency(frequency);
+    samples_supplier.set_samplerate(args.samplerate);
+    samples_supplier.set_bandwidth(args.bandwidth);
+    samples_supplier.activate();
 
     unsafe {
         {

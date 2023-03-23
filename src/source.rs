@@ -14,6 +14,10 @@ pub struct DataSupplier {
     device: soapysdr::Device,
     // Tuning frequency
     frequency: f64,
+    // Sample rate
+    samplerate: f64,
+    // Analog bandwidth
+    bandwidth: f64,
     // FFT instance optimized for our desired size
     fft: Arc<dyn Fft<f32>>,
     // Source of input samples
@@ -27,7 +31,7 @@ pub struct DataSupplier {
 }
 
 impl DataSupplier {
-    pub fn new(frequency: u32, averaging: u32) -> Self {
+    pub fn new(averaging: u32) -> Self {
         let averaging_inv = 1.0 / averaging as f32;
         let fft = FftPlanner::new().plan_fft_forward(NUM_SAMPLES);
 
@@ -38,31 +42,23 @@ impl DataSupplier {
         let args: soapysdr::Args = "driver=hackrf".into();
         let device = soapysdr::Device::new(args).expect("No SoapySDR device found");
 
-        let frequency = frequency as f64;
-        let tuning_args: soapysdr::Args = "OFFSET=50e3".into();
-        device
-            .set_frequency(soapysdr::Direction::Rx, 0, frequency, tuning_args)
-            .expect("Cannot set frequency");
-
-        device
-            .set_sample_rate(soapysdr::Direction::Rx, 0, 2.0e6)
-            .expect("Cannot set sample rate");
+        let frequency = 0.0;
+        let samplerate = 0.0;
+        let bandwidth = 0.0;
 
         device
             .set_gain(soapysdr::Direction::Rx, 0, 30.0)
             .expect("Cannot set gain");
 
-        let mut rx_stream: soapysdr::RxStream<Complex32> = device.rx_stream(&[0]).unwrap();
-
-        rx_stream
-            .activate(None)
-            .expect("Cannot activate reception stream");
+        let rx_stream: soapysdr::RxStream<Complex32> = device.rx_stream(&[0]).unwrap();
 
         Self {
             averaging,
             averaging_inv,
             device,
             frequency,
+            samplerate,
+            bandwidth,
             fft,
             rx_stream,
             buffer_c32,
@@ -71,13 +67,35 @@ impl DataSupplier {
         }
     }
 
-    pub fn set_frequency(&mut self, freq: u32) {
-        self.frequency = freq as f64;
+    pub fn set_frequency(&mut self, frequency: u32) {
+        self.frequency = frequency as f64;
         let tuning_args: soapysdr::Args = "OFFSET=50e3".into();
         self.device
             .set_frequency(soapysdr::Direction::Rx, 0, self.frequency, tuning_args)
             .expect("Cannot set frequency");
         println!("Frequency set to {}", self.frequency);
+    }
+
+    pub fn set_samplerate(&mut self, samplerate: u32) {
+        self.samplerate = samplerate as f64;
+        self.device
+            .set_sample_rate(soapysdr::Direction::Rx, 0, self.samplerate)
+            .expect("Cannot set sample rate");
+        println!("Sample rate set to {}", self.samplerate);
+    }
+
+    pub fn set_bandwidth(&mut self, bandwidth: u32) {
+        self.bandwidth = bandwidth as f64;
+        self.device
+            .set_bandwidth(soapysdr::Direction::Rx, 0, self.bandwidth)
+            .expect("Cannot set bandwidth");
+        println!("Bandwidth set to {}", self.bandwidth);
+    }
+
+    pub fn activate(&mut self) {
+        self.rx_stream
+            .activate(None)
+            .expect("Cannot activate reception stream");
     }
 
     pub fn get_block(&mut self) -> &[f32] {
@@ -86,10 +104,15 @@ impl DataSupplier {
 
         for _ in 0..self.averaging {
             // Read new chunk of data
-            let _num_samps = self
+            let _num_samps = match self
                 .rx_stream
-                .read(&[&mut self.buffer_c32], 5000000)
-                .expect("unable to read stream");
+                .read(&[&mut self.buffer_c32], 5000000) {
+                    Ok(n) => n,
+                    Err(error) => match error.code {
+                        soapysdr::ErrorCode::Overflow => continue,
+                        _ => panic!("error receiving samples: {:?}", error),
+                    }
+            };
 
             // Compute in-place FFT with scratch memory to avoid allocations
             self.fft
