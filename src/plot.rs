@@ -289,8 +289,13 @@ impl WaterfallPlot {
         self.y_offset = (self.y_offset + 1) % MAX_HEIGHT;  // absolute position of line to paint
         if self.y_offset % (TEXTURE_HEIGHT as usize) == 0 {
             // Change target to the next texture
+            let last = self.target_texture;
             self.target_texture = (self.target_texture + 1) % NUM_TILES as usize;
-            (self.render_texture, self.source_texture) = (ZTEXTURE, self.target_texture);
+            // keeping last as source texture avoids visual artifact but loses 1 tile
+            (self.render_texture, self.source_texture) = (ZTEXTURE, last);
+        } else if self.y_offset % (TEXTURE_HEIGHT as usize) == 1 {
+            // special case due to visual artifact fix
+            (self.render_texture, self.source_texture) = (self.target_texture, ZTEXTURE);
         } else {
             // Source texture and render texture are mutually exclusive, thus we need
             // to use at least 2 textures. We swap between them every frame.
@@ -299,7 +304,7 @@ impl WaterfallPlot {
 
         // If scroll is locked, time position needs to be updated
         if self.scroll_advance == false
-        && self.time_position < ((NUM_TILES - 1) * (TEXTURE_HEIGHT as usize) - 1) as usize
+        && self.time_position < ((NUM_TILES - 2) * (TEXTURE_HEIGHT as usize) - 1) as usize
         {
             self.time_position = self.time_position + 1;
         }
@@ -344,7 +349,7 @@ impl WaterfallPlot {
     pub unsafe fn scroll(&mut self, val: i32) {
         self.time_position = (self.time_position as i32 + val)
             .max(0)
-            .min((NUM_TILES as i32 - 1) * TEXTURE_HEIGHT as i32 - 1)
+            .min((NUM_TILES as i32 - 2) * TEXTURE_HEIGHT as i32 - 1)
             as usize;
         self.scroll_advance = self.time_position == 0;
     }
