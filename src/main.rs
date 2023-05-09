@@ -1,8 +1,11 @@
 mod plot;
 mod source;
+mod am_source;
 
 use crate::plot::WaterfallPlot;
 use crate::source::DataSupplier;
+use crate::am_source::AmaltheaDataSupplier;
+
 use clap::Parser;
 
 /// Simple program to plot a waterfall from standard input
@@ -50,7 +53,7 @@ fn main() {
 
     //
     let mut waterfallplot = unsafe { WaterfallPlot::new(gl) };
-    let mut samples_supplier = DataSupplier::new(args.averaging);
+    let mut samples_supplier = AmaltheaDataSupplier::new(args.averaging);
     let mut last_touch: f64 = 0.0;
     let mut frequency = args.frequency;
 
