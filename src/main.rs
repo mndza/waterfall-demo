@@ -124,12 +124,20 @@ fn main() {
                             glutin::event::VirtualKeyCode::C => {
                                 waterfallplot.incr_min(-10.0);
                             }
-                            glutin::event::VirtualKeyCode::Right => {
+                            glutin::event::VirtualKeyCode::PageUp => {
                                 frequency += 10e6 as u32;
                                 samples_supplier.set_frequency(frequency);
                             }
-                            glutin::event::VirtualKeyCode::Left => {
+                            glutin::event::VirtualKeyCode::PageDown => {
                                 frequency -= 10e6 as u32;
+                                samples_supplier.set_frequency(frequency);
+                            }
+                            glutin::event::VirtualKeyCode::Right => {
+                                frequency += 1e6 as u32;
+                                samples_supplier.set_frequency(frequency);
+                            }
+                            glutin::event::VirtualKeyCode::Left => {
+                                frequency -= 1e6 as u32;
                                 samples_supplier.set_frequency(frequency);
                             }
                             glutin::event::VirtualKeyCode::Up => {
